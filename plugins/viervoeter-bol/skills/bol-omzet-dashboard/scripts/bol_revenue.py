@@ -4,6 +4,9 @@
 Credentials come ONLY from environment variables BOL_CLIENT_ID and
 BOL_CLIENT_SECRET. Never put them in this repository (it is public).
 
+Orders are listed per latest-change-date (one query per day from the start
+date to today): without that filter bol only returns the last few days.
+
 Revenue = sum((quantity - quantityCancelled) * unitPrice) per order item,
 grouped by the day the order was placed (Europe/Amsterdam).
 bol's unitPrice is the consumer price, so revenue is INCLUDING btw.
@@ -100,24 +103,35 @@ def main():
     bol = Bol(cid, sec)
 
     # 1. List all orders (all statuses, all fulfilment methods), filter on placed date.
-    wanted = []
-    page = 1
-    while True:
-        j = bol.get("/orders", {"page": page, "fulfilment-method": "ALL", "status": "ALL"})
-        orders = j.get("orders", [])
-        if not orders:
-            break
-        for o in orders:
-            placed = datetime.fromisoformat(o["orderPlacedDateTime"].replace("Z", "+00:00")).astimezone(TZ).date()
-            if d_from <= placed <= d_to:
-                wanted.append((o["orderId"], placed, o.get("orderItems", [])))
-        page += 1
-        if page > 2000:
-            break
+    # Without latest-change-date bol only returns recent orders, so query
+    # every change date from d_from to today and de-duplicate on orderId.
+    wanted, seen = [], set()
+    cd = d_from
+    while cd <= today:
+        page = 1
+        while True:
+            j = bol.get("/orders", {"page": page, "fulfilment-method": "ALL", "status": "ALL",
+                                    "latest-change-date": cd.isoformat()})
+            orders = j.get("orders", [])
+            if not orders:
+                break
+            for o in orders:
+                if o["orderId"] in seen:
+                    continue
+                seen.add(o["orderId"])
+                placed = datetime.fromisoformat(o["orderPlacedDateTime"].replace("Z", "+00:00")).astimezone(TZ).date()
+                if d_from <= placed <= d_to:
+                    wanted.append((o["orderId"], placed, o.get("orderItems", [])))
+            page += 1
+            if page > 2000:
+                break
+        print(f"change-date {cd}: {len(seen)} orders seen", file=sys.stderr, flush=True)
+        cd += timedelta(days=1)
 
     # 2. Revenue per order (use unitPrice from list if present, else order detail).
     days = defaultdict(lambda: {"revenue": 0.0, "orders": 0, "units": 0})
-    for oid, placed, items in wanted:
+    for n_, (oid, placed, items) in enumerate(wanted):
+        if n_ % 50 == 0: print(f"detail {n_}/{len(wanted)}", file=sys.stderr, flush=True)
         if not items or any("unitPrice" not in it for it in items):
             items = bol.get(f"/orders/{oid}").get("orderItems", [])
         rev, units = 0.0, 0
