@@ -14,7 +14,7 @@ Fills the live dashboard https://claude.ai/artifact/SA6J8aKi3PT3R4fj9mmSht with 
 - Collection `shopify`, same shape without `units`:
   `{"month": "2026-10", "days": {"2026-10-01": {"revenue": 2145.23, "orders": 26}, ...}}`
 - Collection `bolretour`, one doc per month, id `YYYY-MM`. `bol_returns.py` adds
-  `{"retouren": [{"datum": "2026-10-19", "ean": "...", "titel": "...", "aantal": 1, "reden": "...", "afgehandeld": false, "orderId": "...", "returnId": "...", "fulfilment": "FBR"}, ...], "retourenBijgewerkt": "<ISO>"}`.
+  `{"retouren": [{"datum": "2026-10-19", "ean": "...", "titel": "...", "aantal": 1, "reden": "...", "afgehandeld": false, "orderId": "...", "returnId": "...", "fulfilment": "FBR", "prijs": 279.0, "prijsGeschat": false, "bedrag": 279.0}, ...], "retourenBijgewerkt": "<ISO>"}`. `prijs` is the unitPrice incl. btw from the bol order; for orders bol no longer serves it is the median price of that EAN (`prijsGeschat: true`).
   Other fields in these docs (`dagen`, `modellen`, `open`, `redenen`, `totaal`) come from another job and must stay.
 - Doc `meta/status`: `{"lastRun": "<ISO timestamp>", "source": "bol Retailer API v10 + Shopify", "note": "..."}`
 

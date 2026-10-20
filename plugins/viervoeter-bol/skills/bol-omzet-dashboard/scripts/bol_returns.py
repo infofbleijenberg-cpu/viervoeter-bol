@@ -10,12 +10,16 @@ Usage:
 Writes one JSON file per month: OUT/<YYYY-MM>.json
   {"retouren": [{"datum": "2026-10-19", "ean": "...", "titel": "...", "aantal": 1,
                  "reden": "...", "afgehandeld": false, "orderId": "...", "returnId": "...",
-                 "fulfilment": "FBR"}, ...],
+                 "fulfilment": "FBR", "prijs": 279.0, "bedrag": 279.0}, ...],
    "retourenBijgewerkt": "<ISO>"}
 Write each file to the dashboard with ArtifactData `update` on collection
 `bolretour`, doc id = month. `update` merges, so the existing fields
 (dagen, modellen, open, redenen, totaal) stay untouched.
 datum = registration date at bol (Europe/Amsterdam).
+prijs = unitPrice incl. btw from the original bol order, bedrag = prijs x aantal
+When bol no longer serves the order (older than about 3 months), prijs is the
+median price of that EAN in the other returns and prijsGeschat is true; null
+when that EAN has no known price at all.
 """
 import argparse
 import base64
@@ -138,6 +142,27 @@ def main():
                 if not any_recent:
                     break
 
+    # Price per returned item: unitPrice (incl. btw) of that EAN in the original order.
+    prices = {}
+    for oid in sorted({r["orderId"] for r in rows if r["orderId"]}):
+        for oi in bol.get(f"/orders/{oid}").get("orderItems") or []:
+            ean = (oi.get("product") or {}).get("ean") or oi.get("ean")
+            if ean and oi.get("unitPrice") is not None:
+                prices[(oid, ean)] = float(oi["unitPrice"])
+    # bol no longer serves orders older than about 3 months. For those, use the
+    # median price of the same EAN in the orders that could be read (prijsGeschat).
+    by_ean = defaultdict(list)
+    for (oid, ean), p in prices.items():
+        by_ean[ean].append(p)
+    for r in rows:
+        p, est = prices.get((r["orderId"], r["ean"])), False
+        if p is None and by_ean.get(r["ean"]):
+            ps = sorted(by_ean[r["ean"]])
+            p, est = ps[len(ps) // 2], True
+        r["prijs"] = p
+        r["prijsGeschat"] = est
+        r["bedrag"] = round(p * r["aantal"], 2) if p is not None else None
+
     by_month = defaultdict(list)
     for r in sorted(rows, key=lambda x: (x["datum"], x["returnId"]), reverse=True):
         by_month[r["datum"][:7]].append(r)
@@ -159,6 +184,8 @@ def main():
         "from": cutoff,
         "returns": len(rows),
         "open": sum(1 for r in rows if not r["afgehandeld"]),
+        "bedrag": round(sum(r["bedrag"] or 0 for r in rows), 2),
+        "zonderPrijs": sum(1 for r in rows if r["bedrag"] is None),
         "months": {m: len(v) for m, v in sorted(by_month.items())},
     }))
 
