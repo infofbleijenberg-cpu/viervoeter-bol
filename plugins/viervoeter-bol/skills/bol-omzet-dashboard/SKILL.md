@@ -10,7 +10,8 @@ Fills the live dashboard https://claude.ai/artifact/SA6J8aKi3PT3R4fj9mmSht with 
 ## Data model (artifact database)
 
 - Collection `months` (bol.com), one doc per month, id `YYYY-MM`:
-  `{"month": "2026-10", "days": {"2026-10-01": {"revenue": 123.45, "orders": 3, "units": 4}, ...}}`
+  `{"month": "2026-10", "days": {"2026-10-01": {"revenue": 123.45, "orders": 3, "units": 4, "eans": {"8720726296588": 2, ...}}, ...}}`
+  `eans` = units sold per EAN that day; the dashboard uses it for the return percentage per product.
 - Collection `shopify`, same shape without `units`:
   `{"month": "2026-10", "days": {"2026-10-01": {"revenue": 2145.23, "orders": 26}, ...}}`
 - Collection `bolretour`, one doc per month, id `YYYY-MM`. `bol_returns.py` adds
