@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(/usr/bin/python3 /tmp/vvb/plugins/viervoeter-bol/skills/bol-omzet-dashboard/scripts/bol_revenue.py *)",
+      "Bash(/usr/bin/python3 /tmp/vvb/bol_returns.py *)"
+    ]
+  }
+}
