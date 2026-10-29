@@ -19,9 +19,22 @@ Usage:
 Writes one JSON file per month: OUT_DIR/<YYYY-MM>.json
   {"month": "2026-10", "days": {"2026-10-01": {"revenue": 123.45, "orders": 3, "units": 4}, ...}}
 Days in range without orders are written with zeros.
+
+Optional, per product (EAN):
+  --products-out DIR   also write DIR/<YYYY-MM>.json
+      {"month": "2026-10", "days": {"2026-10-01": {"<EAN>": {"bolRev": 49.99, "bolUnits": 1}, ...}}}
+      Same order items and same rule as the day totals, counted in whole cents,
+      so per day the sum of bolRev is exactly the day revenue above.
+  --products-base DIR  existing product docs (JSON files <YYYY-MM>.json, also in
+      sub-folders, e.g. an ArtifactData out_dir). EANs that had bol sales on a day
+      in the window but have none now (e.g. cancelled later) get
+      {"bolRev": {"__delete__": true}, "bolUnits": {"__delete__": true}}, so an
+      ArtifactData `update` with the output file keeps the day exactly in sync.
+      Shopify fields (shopRev/shopUnits) are never touched.
 """
 import argparse
 import base64
+import glob
 import json
 import os
 import sys
@@ -83,6 +96,8 @@ def main():
     ap.add_argument("--from", dest="dfrom")
     ap.add_argument("--to", dest="dto")
     ap.add_argument("--out", required=True)
+    ap.add_argument("--products-out", dest="pout")
+    ap.add_argument("--products-base", dest="pbase")
     a = ap.parse_args()
 
     cid, sec = os.environ.get("BOL_CLIENT_ID"), os.environ.get("BOL_CLIENT_SECRET")
@@ -129,21 +144,28 @@ def main():
         cd += timedelta(days=1)
 
     # 2. Revenue per order (use unitPrice from list if present, else order detail).
-    days = defaultdict(lambda: {"revenue": 0.0, "orders": 0, "units": 0})
+    # Amounts are summed in whole cents so per-EAN figures add up exactly.
+    days = defaultdict(lambda: {"cents": 0, "orders": 0, "units": 0})
+    prods = defaultdict(lambda: defaultdict(lambda: [0, 0]))  # day -> ean -> [cents, units]
     for n_, (oid, placed, items) in enumerate(wanted):
         if n_ % 50 == 0: print(f"detail {n_}/{len(wanted)}", file=sys.stderr, flush=True)
-        if not items or any("unitPrice" not in it for it in items):
+        if not items or any("unitPrice" not in it for it in items) or \
+                (a.pout and any(not (it.get("ean") or (it.get("product") or {}).get("ean")) for it in items)):
             items = bol.get(f"/orders/{oid}").get("orderItems", [])
-        rev, units = 0.0, 0
+        cents, units = 0, 0
+        k = placed.isoformat()
         for it in items:
             q = int(it.get("quantity", 0)) - int(it.get("quantityCancelled", 0) or 0)
             if q <= 0:
                 continue
-            rev += q * float(it.get("unitPrice", 0))
+            c = q * round(float(it.get("unitPrice", 0)) * 100)
+            cents += c
             units += q
+            ean = str(it.get("ean") or (it.get("product") or {}).get("ean") or "onbekend")
+            prods[k][ean][0] += c
+            prods[k][ean][1] += q
         if units:
-            k = placed.isoformat()
-            days[k]["revenue"] += rev
+            days[k]["cents"] += cents
             days[k]["orders"] += 1
             days[k]["units"] += units
 
@@ -151,18 +173,60 @@ def main():
     months = defaultdict(dict)
     d = d_from
     while d <= d_to:
-        v = days.get(d.isoformat(), {"revenue": 0.0, "orders": 0, "units": 0})
+        v = days.get(d.isoformat(), {"cents": 0, "orders": 0, "units": 0})
         months[d.strftime("%Y-%m")][d.isoformat()] = {
-            "revenue": round(v["revenue"], 2), "orders": v["orders"], "units": v["units"]}
+            "revenue": v["cents"] / 100, "orders": v["orders"], "units": v["units"]}
         d += timedelta(days=1)
     os.makedirs(a.out, exist_ok=True)
     for m, dd in sorted(months.items()):
         with open(os.path.join(a.out, f"{m}.json"), "w") as f:
             json.dump({"month": m, "days": dd}, f, indent=1)
     total = sum(v["revenue"] for dd in months.values() for v in dd.values())
-    print(json.dumps({"from": d_from.isoformat(), "to": d_to.isoformat(),
+    extra = {}
+    if a.pout:
+        extra = write_products(a, prods, months, d_from, d_to)
+    print(json.dumps({**extra, "from": d_from.isoformat(), "to": d_to.isoformat(),
                       "orders_found": len(wanted), "revenue_incl_btw": round(total, 2),
                       "months": sorted(months)}))
+
+
+def write_products(a, prods, months, d_from, d_to):
+    """Write per-EAN bol figures per day; returns summary fields."""
+    base = {}  # day -> set of EANs with bol fields in the existing docs
+    if a.pbase:
+        for f in glob.glob(os.path.join(a.pbase, "**", "*.json"), recursive=True):
+            try:
+                doc = json.load(open(f))
+            except Exception:
+                continue
+            doc = doc.get("data", doc) if isinstance(doc, dict) else {}
+            for day, eans in (doc.get("days") or {}).items():
+                for ean, v in (eans or {}).items():
+                    if isinstance(v, dict) and ("bolRev" in v or "bolUnits" in v):
+                        base.setdefault(day, set()).add(ean)
+    out = defaultdict(dict)
+    removed, mismatch, eans_seen = 0, [], set()
+    d = d_from
+    while d <= d_to:
+        k = d.isoformat()
+        day = {}
+        for ean, (c, q) in sorted(prods.get(k, {}).items()):
+            day[ean] = {"bolRev": c / 100, "bolUnits": q}
+            eans_seen.add(ean)
+        for ean in sorted(base.get(k, set()) - set(day)):
+            day[ean] = {"bolRev": {"__delete__": True}, "bolUnits": {"__delete__": True}}
+            removed += 1
+        tot = sum(round(v["bolRev"] * 100) for v in day.values() if isinstance(v["bolRev"], (int, float)))
+        if tot != round(months[d.strftime("%Y-%m")][k]["revenue"] * 100):
+            mismatch.append(k)
+        out[d.strftime("%Y-%m")][k] = day
+        d += timedelta(days=1)
+    os.makedirs(a.pout, exist_ok=True)
+    for m, dd in sorted(out.items()):
+        with open(os.path.join(a.pout, f"{m}.json"), "w") as f:
+            json.dump({"month": m, "days": dd}, f, indent=1)
+    return {"products_months": sorted(out), "products_eans": sorted(eans_seen),
+            "products_removed": removed, "products_check": "ok" if not mismatch else mismatch}
 
 
 if __name__ == "__main__":
