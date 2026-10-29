@@ -31,6 +31,9 @@ Optional, per product (EAN):
       {"bolRev": {"__delete__": true}, "bolUnits": {"__delete__": true}}, so an
       ArtifactData `update` with the output file keeps the day exactly in sync.
       Shopify fields (shopRev/shopUnits) are never touched.
+  The JSON summary on stdout then also has products_check ("ok" or the days
+  where the per-EAN sum differs), products_eans and products_titles
+  ({EAN: bol product title}).
 """
 import argparse
 import base64
@@ -147,6 +150,7 @@ def main():
     # Amounts are summed in whole cents so per-EAN figures add up exactly.
     days = defaultdict(lambda: {"cents": 0, "orders": 0, "units": 0})
     prods = defaultdict(lambda: defaultdict(lambda: [0, 0]))  # day -> ean -> [cents, units]
+    titles = {}  # ean -> bol product title (from the order detail)
     for n_, (oid, placed, items) in enumerate(wanted):
         if n_ % 50 == 0: print(f"detail {n_}/{len(wanted)}", file=sys.stderr, flush=True)
         if not items or any("unitPrice" not in it for it in items) or \
@@ -162,6 +166,9 @@ def main():
             cents += c
             units += q
             ean = str(it.get("ean") or (it.get("product") or {}).get("ean") or "onbekend")
+            t = (it.get("product") or {}).get("title") or it.get("title")
+            if t:
+                titles[ean] = t
             prods[k][ean][0] += c
             prods[k][ean][1] += q
         if units:
@@ -185,6 +192,7 @@ def main():
     extra = {}
     if a.pout:
         extra = write_products(a, prods, months, d_from, d_to)
+        extra["products_titles"] = {e: titles.get(e, "") for e in extra["products_eans"]}
     print(json.dumps({**extra, "from": d_from.isoformat(), "to": d_to.isoformat(),
                       "orders_found": len(wanted), "revenue_incl_btw": round(total, 2),
                       "months": sorted(months)}))
