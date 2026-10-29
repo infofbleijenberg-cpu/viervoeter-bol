@@ -17,7 +17,10 @@ Usage:
   python3 bol_revenue.py --from 2026-07-10 --to 2026-10-08 --out OUT_DIR
 
 Writes one JSON file per month: OUT_DIR/<YYYY-MM>.json
-  {"month": "2026-10", "days": {"2026-10-01": {"revenue": 123.45, "orders": 3, "units": 4}, ...}}
+  {"month": "2026-10", "days": {"2026-10-01": {"revenue": 123.45, "orders": 3, "units": 4,
+                                               "eans": {"8720726296588": 2, ...}}, ...}}
+"eans" = units sold per EAN that day (0 for an EAN whose items were all cancelled,
+so an ArtifactData update overwrites an earlier count).
 Days in range without orders are written with zeros.
 """
 import argparse
@@ -129,20 +132,23 @@ def main():
         cd += timedelta(days=1)
 
     # 2. Revenue per order (use unitPrice from list if present, else order detail).
-    days = defaultdict(lambda: {"revenue": 0.0, "orders": 0, "units": 0})
+    days = defaultdict(lambda: {"revenue": 0.0, "orders": 0, "units": 0, "eans": defaultdict(int)})
     for n_, (oid, placed, items) in enumerate(wanted):
         if n_ % 50 == 0: print(f"detail {n_}/{len(wanted)}", file=sys.stderr, flush=True)
         if not items or any("unitPrice" not in it for it in items):
             items = bol.get(f"/orders/{oid}").get("orderItems", [])
         rev, units = 0.0, 0
+        k = placed.isoformat()
         for it in items:
             q = int(it.get("quantity", 0)) - int(it.get("quantityCancelled", 0) or 0)
+            ean = it.get("ean") or (it.get("product") or {}).get("ean")
+            if ean:
+                days[k]["eans"][ean] += max(q, 0)
             if q <= 0:
                 continue
             rev += q * float(it.get("unitPrice", 0))
             units += q
         if units:
-            k = placed.isoformat()
             days[k]["revenue"] += rev
             days[k]["orders"] += 1
             days[k]["units"] += units
@@ -151,9 +157,10 @@ def main():
     months = defaultdict(dict)
     d = d_from
     while d <= d_to:
-        v = days.get(d.isoformat(), {"revenue": 0.0, "orders": 0, "units": 0})
+        v = days.get(d.isoformat(), {"revenue": 0.0, "orders": 0, "units": 0, "eans": {}})
         months[d.strftime("%Y-%m")][d.isoformat()] = {
-            "revenue": round(v["revenue"], 2), "orders": v["orders"], "units": v["units"]}
+            "revenue": round(v["revenue"], 2), "orders": v["orders"], "units": v["units"],
+            "eans": dict(v["eans"])}
         d += timedelta(days=1)
     os.makedirs(a.out, exist_ok=True)
     for m, dd in sorted(months.items()):
